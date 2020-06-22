@@ -1,205 +1,245 @@
-## Using the Vitis v++ compiler to develop F1 accelerated applications
+## Becoming Familiar With IDCT Application
 
-This lab is designed to teach the fundamentals of the Vitis development environment and programming model. This includes: familiarizing with OpenCL, understanding software and hardware emulation flows, profiling performance and identifying how to optimize host and kernel code.
+This lab is designed to teach the fundamentals of the Vitis development environment and programming model. Its contents are tailored, to familiarize user with basic OpenCL APIs, understanding of software and hardware emulation flows, profiling performance and identifying how to optimize host code and kernel hardware implementation.
 
-The kernel used in this lab is an Inverse Discrete Cosine Transform (IDCT), a function widely used in audio/image codecs such as HEVC.
+The kernels or the functions used for FPGA acceleration in this lab are slightly different hardware implementations of Inverse Discrete Cosine Transform (IDCT) algorithm, a function widely used for transform coding in applications like audio/image codecs such as JPEG and High Efficiency Video Coding(HEVC).
 
 
 ### Setting Up Vitis Environment
 
-1.  Open a new terminal by right-clicking anywhere in the Desktop area and selecting **Open Terminal**.
+1.  Open a new terminal by right-clicking anywhere in the desktop area and by selecting **Open Terminal**.
 
 1.  Set up the Vitis environment.  
 
     ```bash
-    cd $AWS_FPGA_REPO_DIR
-    source vitis_setup.sh
+    source $AWS_FPGA_REPO_DIR/vitis_setup.sh
     ```
-	*Note: the Vitis_setup.sh script might generate warning messages, but these can be safely ignored.*
+    
+	*Note: the Vitis_setup.sh script might generate warning messages, which can be safely ignored.*
 
-1.  Go to design folder and investigate the files.
+1.  Go to design folder and investigate the design files.
+
     ```bash
     # Go to the lab directory
     export LAB_WORK_DIR=/home/centos/src/project_data/
     cd $LAB_WORK_DIR/Vitis-AWS-F1-Developer-Labs/modules/module_01/idct/
     ls
     ```
-	  The `src` folder contains the kernel source file and host code. The `Makefile` is provided for design compilation and execution. Let's open up the make file and take a look at its contents.
+	  The `src` folder contains the kernel source files and host code. The `Makefile` is provided for design compilation and execution. Let's open up the make file and take a look at it.
     ```
     vi Makefile
     ```
 
-    In 'platform selection' section, the default target platform is set as `xilinx_aws-vu9p-f1_shell-v04261818_201920_1` which is the AWS F1 platform.
+    In the 'platform selection' section, the default target platform is set as `xilinx_aws-vu9p-f1_shell-v04261818_201920_1` which is the AWS F1 platform.
 
-    The next couple of lines define the design files location and filenames. Following that is the host compiler settings and kernel compiler and linker settings. Notice that in the last line of kernel linker setting, DDR banks are assigned to each port. You don't need to modify any of the options here but you may want to play with them after finishing this tutorial.
+    The next couple of lines define the design files location and file names. Following that is the host compiler settings, kernel compiler and linker settings.  You don't need to modify any of the options here but you may want to play with them after finishing this tutorial.
 
-    Exit Makefile view window and let's take a look at the design files.
+    Exit **Makefile** view window and let's take a look at the design files.
 
-### Overview of the source code used in this example
+### Overview of the Application Source Code
 
-1.  The project is comprised of two files under src directory:
-	* **idct.cpp** contains the code for the host application running on the CPU.
-	* **krnl_idct.cpp** contains the code for the kernel (custom accelerator) running on the FPGA.
+---
+The project comprises of multiple files under src directory, following is the list with brief description:
 
-1.  Open the **krnl_idct.cpp** file.
-	* The **idct** function is the core algorithm implemented in the custom hardware accelerator.
-	* This computationally heavy function can be highly parallelized on the FPGA, providing significant acceleration over a CPU-based implementation.
-	* The **krnl_idct** function is the top-level for the custom hardware accelerator. Interface properties for the accelerator are specified in this function.
+* **host.cpp** contains main function, performs data initialization, allocation and forks CPU and FPGA threads 
+
+* **krnl_idct_wrapper.hpp** contains **_runFPGA_** thread that coordinates kernel execution on FPGA accelerator  
+
+* **idct.cpp** contains the software implementation of IDCT (reference model) that will run as a separate thread on CPU or host side.
+
+* **krnl_idct.cpp** contains the code for IDCT kernel (custom accelerator) for running it on FPGA.
+
+* **krnl_idct_med.cpp** contains a version of IDCT kernel for demonstration purposes only **_with II=4_**
+
+* **krnl_idct_noflow.cpp** contains a version of IDCT kernel for demonstration purposes only **_without dataflow optimization_** 
+
+* **krnl_idct_slow.cpp** contains a version of IDCT kernel for demonstration purposes only **_with II=8_**
+
+* **types.hpp** defines IDCT I/O and DDR interface types
+
+* **utilities.hpp** contains utility function used for printing execution information to console 
+---
+
+2.  Open the **krnl_idct.cpp** file to see the code structure used for **IDCT kernel**.
+	* The **idct** function is the core algorithm implemented as a custom hardware accelerator.
+	* This computationally heavy function can be highly parallelized on FPGA using a parallel datapath providing significant acceleration compared to CPU-based implementation.
+	* The **krnl_idct** function is the top-level for the custom hardware accelerator. Memory interface properties for the accelerator are specified in this function allowing us to utilize the maximum potential bandwidth of device DDR memory. 
 	* The **krnl_idct_dataflow** function is called by the top-level function and encapsulates the main functions of the accelerator.
-	* The **read_blocks** function reads from global memory values sent by the host application and streams them to the **execute** function.
-	* The **execute** function receives the streaming data and, for each 8x8 block received, calls the **idct** function to perform the actual computation. Streams the results back out.
-	* The **write_blocks** function receives the streaming results from the **execute** function and writes them back to global memory for the host application.
+	* The **read_blocks** function reads data from device DDR memory written by the host application and streams(writes to an output FIFO storage) this data to the **execute** function.
+	* The **execute** function receives the streaming data and, for each 8x8 block received, calls the **idct** function to perform the actual computation and streams the results to and output FIFO.
+	* The **write_blocks** function receives the streaming results from the **execute** function through a FIFO and writes them back to device DDR memory which are read by the host application.
+	
+3. The kernels in the source files **krnl_idct_slow.cpp** , **krnl_idct_med.cpp** and **krnl_idct_noflow.cpp** describe very similar kernels. These are almost identical but with variations on micro-architecture for hardware implementation. Which can be achieved by adding and removing some **Vitis HLS pragmas**. These kernels are designed to *show how different micro-architectural variations can be used to trade-off FPGA hardware resources with performance*. In this lab we will do all experiments related to kernel **"krnl_idct"** only. 
 
-1. Open the **idct.cpp** file.  
-	* The **main** function of the C++ program initializes the test vectors, sets-up OpenCL, runs the reference model, runs the hardware accelerator, releases the OpenCL resources, and compares the results of the reference IDCT model with the accelerator implementation.
-	* The **runFPGA** function takes in a vector of inputs and, for each 8x8 block, calls the hardware accelerated IDCT using the **write**, **run**, **read**, and **finish** helper functions. These function use OpenCL API calls to communicate with the FPGA and are covered in greater detail later in this lab.
-	* The **runCPU** function takes in a vector of inputs and, for each 8x8 block, calls **idctSoft**, a reference implementation of the IDCT .
-	* The **idctSoft** function is the reference software implementation of the IDCT algorithm, used in this example to check the results coming back from the FPGA. 	
-	* The **oclDct** class is used to encapsulate the OpenCL runtime calls to interact with the kernel in the FPGA.
-	* The **aligned_allocator**, **smalloc**, **load_file_to_memory**, and **getBinaryName** functions are small helper functions used during test vector generation and OpenCL setup.
+4. Open the **host.cpp** file and observe following sequence of steps carried out by host application:  
+	* **Command line arguments:** The **main** first parses the command line arguments. These command line arguments can be used to control total number of IDCT blocks to be processed and how many IDCT blocks kernel processes in one go (call made from host side with appropriate data size) also called batch size.
 
-1. Go to line 520 of the **idct.cpp** file.
+    * **Test Vectors:** next test vectors are allocated and initialized
 
-	This section of code is where the OpenCL environment is setup in the host application. This section is typical of most Vitis application and will look very familiar to developers with prior OpenCL experience. This body of code can often be reused as-is from project to project.
+    * **Device Programming:**  In next phase Xilinx device search is performed and the first found device is programmed with user provided Xilinx binary also called AFIs for AWS. An associated OpenCL Context and Command Queue are also created.
 
-	To setup the OpenCL environment, the following API calls are made:
+    * **Kernel Handle:** after the device is programmed with FPGA Image a kernel handle is created which can be used to process data.
 
-	* **clGetPlatformIDs**: This function queries the system to identify the different OpenCL platforms. It is called twice as it first extracts the number of platforms before extracting the actual supported platforms.
-	* **clGetPlatformInfo**: Get specific information about the OpenCL platform, such as vendor name and platform name.
-	* **clGetDeviceIDs**: Obtain list of devices available on a platform.
-	* **clCreateContext**: Creates an OpenCL context, which manages the runtime objects.
-	* **clGetDeviceInfo**: Get information about an OpenCL device like the device name.
-	* **clCreateProgramWithBinary**: Creates a program object for a context, and loads specified binary data into the program object. The actual program is obtained before this call through the load_file_to memory function.
-	* **clCreateKernel**: Creates a kernel object.
-	* **clCreateCommandQueue**: Create a command-queue on a specific device.
+    * **CPU and FPGA Threads:** next host launches two separate threads **runCPU** and **runFPGA** for CPU run and FPGA accelerated run respectively at the same time.
 
-	Note: all objects accessed through a **clCreate...** function call are to be released before terminating the program by calling **clRelease...**. This avoids memory leakage and clears the locks on the device.
+    * **Execution Time Measurement:** Once cpu and FPGA thread are forked, main thread calls **measureExecTimes** function which waits on these threads to finish and also samples the time when these threads finish, to calculate execution times. 
+    * **Output Validation and FPGA Peformance:** Once threads finish execution FPGA results are validated by comparing against reference output generated by CPU run and performance comparison is printed out. The performance numbers give metrics such as execution times and throughput(data processing rates).
 
-	All of the above API functions are documented by the [Khronos Group](https://www.khronos.org), the maintainers of OpenCL, the open standard for parallel programming of heterogeneous systems.
+ 9. Now go to **host.cpp** line 47 three important parameters are defined here **BATCH_SIZE**, **NUM_OF_BATCHES** and **MAX_SCHEDULED_BATCHES**:
+ 
+    * **BATCH_SIZE**: Defines number of IDCTs carried out by single call to the kernel, it can also be specified at runtime as host application command line argument
+    * **NUM_OF_BATCHES**: Defines number of batches to be processed in total by the application
+    * **MAX_SCHEDULED_BATCHES**: If multiple batches of input data are to be processed then there is a potential for IDCT compute and data transfer to be overlap for different batches, this parameter specifies how many batches can be scheduled to be processed in overlapping fashion, essentially it defines number of duplicate resources such as **cl::Buffer** objects.
 
-### Running the Emulation Flows
+7. Go to label **FPGA_DEVICE_OPENCL_SETUP** near line 186 of the **host.cpp** file: 
+    
+    This section sets up OpenCL environment for **runFPGA** thread. It is very typical setup for Vitis acceleration applications very familiar to developers with prior OpenCL experience. Following section provides the briefs of used APIs. 
+   * **xcl::get_xil_devices**: Xilinx provided API, returns a list of Xilinx devices connected to the host
+   * **xcl::read_binary_file**: Xilinx provided API, reads a compiled binary file for FPGA
+   * **cl::Program::Binaries**: Creates a binary file object from raw binary file which can be used to create a OpenCL program  associated with a device, essentially programming FPGA device there in.
+   * **cl::Program**: Creates a cl::Program objects and also programs FPGA device. The programmed device may have multiple kernels compiled inside single programs so created object also provides a reference that can be used to create  handles to different kernels.
+   * **cl::Kernel**: Creates a kernel object given the cl::Program handle and kernel name as string, in next labs we will change this name string often, in this case we have multiple kernels but here we are going to use one kernel namely "krnl_idct".
+   
+   **NOTE**:_Many function calls and object construction call use a macro **OCL_CHECK** which is used to parse the return status of type **cl_int**. It errors out after OpenCL call, if call doesn't complete as expected._
 
-  Vitis provides two emulation flows which allow testing the application before deploying it on the F1 instance. The flows are referred to as software emulation and hardware emulation, respectively.
-  * Software emulation is used to identify syntax issues and verify the behavior of application.
-  * Hardware emulation is used to get performance estimates for the accelerated application.
+
+5. Open the **krnl_idct_wrapper.hpp** file.
+    * This file defines a thread wrapper function for the use of host side, it has the host side code that runs on CPU and interacts with the FPGA accelerator using OpenCL C/C++ APIs. The host code structure and the use of OpenCL C/C++ APIs is very typical and similar to the one used in any other heterogeneous acceleration framework such as the ones based on GPUs. 
+    
+    * The **runFPGA** wrapper function takes as input: 
+        * data size
+        * batching info
+        * OpenCL objects like command queue, context and kernel 
+        * input data to be transformed passed as a vector
+        * input vector for IDCT coefficients
+        * an output vector.
+
+    Now see how **runFPGA** performs IDCT compute using FPGA kernel which is very similar to any other device kernel such as GPU used for compute with OpenCL APIs. The basic logic behind this pieces of code is as follows:
+
+    * It creates vector of events to define the dependencies between different compute and data migration tasks such as: 
+        
+        * kernel compute should be triggered only when host to device data transfer completes
+
+        * Output data transfer from device back to host should trigger only when kernel compute completes
+
+        * next batch of input data(triggering processing of next batch of data) transfer from host to device should wait for current transfer
+       
+    Next **cl::Buffers** objects for **input**,**output** and **coefficients** are created that will be used to transfer data from host to device (FPGA) and back. The main loop runs over number of batches to be processed and inside this loop **cl::Buffer** objects are initialized with proper attributes and host pointers, since the input data is contiguous(stored as single block of multiple input batches) so host pointer is provided by calculating the offset based on current batch number and batch size over the input data. Host side application uses number of **cl::Buffer** object each for input and output data, this number can be selected by passing command line argument to host application. These set of buffers are used in a circular buffer style to create a pool of simultaneously enqueued task which allows compute and data transfers to overlap between different kernel calls.
+
+    * **setArg**: is used to set different kernel arguments.
+
+    * **enqueueMigrateMemObjects**: is used to enqueue data transfer request between host and FPGA device.
+
+    * **enqueueTask**: is used to enqueue kernel on command queue for execution, it takes as input list of events that should be completed and also produces an event to signal end of execution.         
+    
+ 6. Open the file **idct.cpp**
+
+	* The **runCPU** function is defined here it takes a vector of inputs and, for each 8x8 block, calls **idctSoft**, a reference implementation of the IDCT to be ran on CPU.
+
+	* The **idctSoft** function is the reference software implementation of the IDCT algorithm, used in this example to check the results coming back from the FPGA.
+
+
+All of the OpenCL API functions used here are documented by the [Khronos Group](https://www.khronos.org), the maintainers of OpenCL, the open standard for parallel programming of heterogeneous systems.
+
+
+### Running the Application
+  Vitis applications can run in multiple modes, these modes include software emulation, hardware emulation and actual system run on FPGA acceleration card. Vitis provides two emulation flows which allow testing the application before deploying it on the F1 instance or actual FPGA accelerator. These flows are referred to as software emulation and hardware emulation modes.
+
+  * **Software emulation** is used to identify syntax issues and verify the behavior of application in this mode the C/C++ model of kernel is used for execution instead of any hardware or hardware model.
+  * **Hardware emulation** is used to get performance estimates for the accelerated application with more realistic results than software emulation flow but it can only provide very accurate estimates about the hardware accelerated function/kernel performance and FPGA resource usage, the memory interfaces and data transfers use approximate models only. In this mode RTL model is used for kernel.
+  
+
+#### Running Software Emulation
 
 1. Run below commands in the terminal window.
     ```bash
+    source $AWS_FPGA_REPO_DIR/vitis_setup.sh
     cd $LAB_WORK_DIR/Vitis-AWS-F1-Developer-Labs/modules/module_01/idct/
     make run TARGET=sw_emu
     ```
-    This will run through software emulation and print out messages as shown in below to indicate the process finishes successfully.
+    This will run through software emulation and print out messages as shown below to indicate that the software emulation process has finished successfully. Output log will signal the execution mode such as sw_emu/hw_emu or system hw. The emulation mode is defined by environment variable **XCL_EMULATION_MODE** set by makefile which is read by host executable to identify run mode, host application tries to identify run mode, to change input data size for quick execution in case of emulation mode.
 
     ```bash
-    TEST PASSED
-    RUN COMPLETE
+    ------ Identified Run mode : sw_emu
+    .
+    .
+    .
+	=====================================================================
+    ------ Launched CPU and FPGA Thread and Monitoring Execution.
+    =====================================================================
+    [FPGA Time(     1s ) : ]  [CPU Time(    1s ) : ]
+    Execution Finished
+    =====================================================================
+    ------ All Task finished !
+    ------ Done with CPU and FPGA based IDCTs
+    ------ Runs complete validating results
+    ------ TEST PASSED ------
     ```
 
     The generated files are put into `build` folder under `design` directory. You can use `ls` command to investigate the generated files.
 
-1. After software emulation finishes successfully, you can move forward to run the design in hardware emulation. The corresponding command is:
+#### Running the Hardware Emulation
+ 
+1. After software emulation finishes successfully, you can move forward and run the design in hardware emulation mode. The corresponding command is:
     ```bash
     cd $LAB_WORK_DIR/Vitis-AWS-F1-Developer-Labs/modules/module_01/idct/
     make run TARGET=hw_emu
     ```
 
-	* In hardware emulation, the host code is compiled to run on the x86 processor and the kernel code is compiled into a hardware model (known as RTL or Register Transfer Level) which is run in RTL simulator.
+	* In hardware emulation, the host code is compiled to run on the x86 processor and the kernel code is compiled into a hardware model (known as RTL or Register Transfer Level) which runs in an RTL simulator.
 	* The build and run cycle takes longer because the kernel code is compiled into a detailed hardware model which is slower to simulate.
 	* The more detailed hardware simulation allow more accurate reporting of kernel and system performance.
 	* This flow is also useful for testing the functionality of the logic that will go in the FPGA.
 	* The hardware emulation is complete when the following messages are displayed:
 
     ```bash
-    TEST PASSED
-    RUN COMPLETE
-    INFO: [SDx-EM 22] [Wall clock time: 02:43, Emulation time: 0.0298064 ms] Data transfer between kernel(s) and global memory(s)
-    krnl_idct_1:m_axi_gmem0-DDR          RD = 128.000 KB             WR = 0.000 KB        
-    krnl_idct_1:m_axi_gmem1-DDR          RD = 0.500 KB               WR = 0.000 KB        
-    krnl_idct_1:m_axi_gmem2-DDR          RD = 0.000 KB               WR = 128.000 KB    
+	=====================================================================
+	------ Launched CPU and FPGA Thread and Monitoring Execution. 
+	=====================================================================
+
+	[FPGA Time(    21s ) : ]  [CPU Time(    1s ) : Done. ]  
+
+	Execution Finished
+	=====================================================================
+	------ All Task finished !
+	------ Done with CPU and FPGA based IDCTs
+	------ Runs complete validating results
+	------ TEST PASSED ------
+	INFO::[ Vitis-EM 22 ] [Time elapsed: 1 minute(s) 19 seconds, Emulation time: 0.132265 ms]
+	Data transfer between kernel(s) and global memory(s)
+	krnl_idct_1:m_axi_gmem0-DDR[0]                 RD = 32.000 KB              WR = 0.000 KB        
+	krnl_idct_noflow_1:m_axi_gmem1-DDR[1]          RD = 0.000 KB               WR = 0.000 KB      
+	krnl_idct_noflow_1:m_axi_gmem2-DDR[2]          RD = 0.000 KB               WR = 0.000 KB      
+	krnl_idct_slow_1:m_axi_gmem0-DDR[0]            RD = 0.000 KB               WR = 0.000 KB        
+	krnl_idct_slow_1:m_axi_gmem1-DDR[1]            RD = 0.000 KB               WR = 0.000 KB        
+	krnl_idct_slow_1:m_axi_gmem2-DDR[2]            RD = 0.000 KB               WR = 0.000 KB        
+	krnl_idct_1:m_axi_gmem1-DDR[1]                 RD = 1.000 KB               WR = 0.000 KB        
+	krnl_idct_1:m_axi_gmem2-DDR[2]                 RD = 0.000 KB               WR = 32.000 KB       
+	krnl_idct_med_1:m_axi_gmem0-DDR[0]             RD = 0.000 KB               WR = 0.000 KB        
+	krnl_idct_med_1:m_axi_gmem1-DDR[1]             RD = 0.000 KB               WR = 0.000 KB        
+	krnl_idct_med_1:m_axi_gmem2-DDR[2]             RD = 0.000 KB               WR = 0.000 KB        
+	krnl_idct_noflow_1:m_axi_gmem0-DDR[0]          RD = 0.000 KB               WR = 0.000 KB 
     ```
+   
+**NOTE:** Vitis Emulation info message "INFO::[ Vitis-EM 22 ]" lists interfaces used by all the kernels and data transferred over them, since in this experiment only kernel "krnl_idct" is used by host so only data transfers for this kernel have non-zero values. Also during the emulation host application identified the emulation mode and used a small data size to ensure short emulation time. To do the full length emulation, please use makefile as follows: 
+ ```bash
+make run TARGET=sw_emu EMU_FULL=1 BATCH_SIZE=1024 NUM_OF_BATCHES=16 MAX_SCHEDULED_BATCHES=8
+ ```   
+Here you can choose the batch size, number of batches , max scheduled batches and full length emulation mode by setting **EMU_FULL=1**, if it is set to '0' the emulation will still use small data set for emulation. For actual FPGA run full length data will be used. In general the setting of these parameter be such that:
 
-### Analyzing the Reports  
-
-This section covers how to locate and read the various reports generated by the emulation runs. The goal of the section is to understand the analysis reports of Vitis before utilizing them in the next section.  
-
-#### Profile Summary report
-
-After the emulation run completes, an profile_summary_hw_emu.csv file is generated in the `build` folder. Before viewing it in Vitis GUI, it must be converted into an appropriate format.
-
-Open the generated profile summary report generated
-```
-cd ./build/
-vitis_analyzer profile_summary_hw_emu.csv
-```
-
-  ![](../../images/module_01/lab_02_idct/HWProfile.PNG)
-
-  This report provides data related to how the application runs. Notice that the report has four tabs at the bottom: **Top Operations**, **Kernels & Compute Units**, **Data Transfers**, and **OpenCL APIs**.
-
-  Click through and inspect each of the tabs:
-
-  * **Top Operations**: Shows all the major top operations of memory transfer between the host and kernel to global memory, and kernel execution. This allows you to identify throughput bottlenecks when transferring data. Efficient transfer of data to the kernel/host allows for faster execution times.
-
-  * **Kernels & Compute Units**: Shows the number of times the kernel was executed. Includes the total, minimum, average, and maximum run times. If the design has multiple compute units, it will show each compute unit’s utilization. When accelerating an algorithm, the faster the kernel executes, the higher the throughput which can be achieved. It is best to optimize the kernel to be as fast as it can be with the data it requires.
-
-  * **Data Transfers**: This tab has no bearing in software emulation as no actual data transfers are emulated across the host to the platform. In hardware emulation, this shows the throughput and bandwidth of the read/writes to the global memory that the host and kernel share.
-
-  * **OpenCL APIs**: Shows all the OpenCL API command executions, how many time each was executed, and how long they take to execute.
-
-3. Click on the **Kernels & Compute Units** tab of the **Profile Summary** report, locate and note the following numbers:
-
-  - Kernel Total Time (ms):
-
-This number will serve as reference point to compare against after optimization.    
-
-#### HLS reports
-
-The Vitis v++ compiler also generates **HLS Reports** for each kernel. **HLS Reports** explain the results of compiling the kernel into hardware. It contains many details (including clocking, resources or device utilization) about the performance and logic usage of the custom-generated hardware logic. These details provide many insights to guide the kernel optimization process.    
-
-1. Locate the HLS reports:
-```
-cd $LAB_WORK_DIR/Vitis-AWS-F1-Developer-Labs/modules/module_01/idct/
-find . -name "*_csynth.rpt"
-```
-
-2. Open the **./build/reports/krnl_idct.hw_emu/hls_reports/krnl_idct_csynth.rpt** file, scroll to the **Performance Estimates** section, locate the **Latency (clock cycles)**  summary table and note the following performance numbers:
-
-  - Latency (min/max):
-  - Interval (min/max):
-
-![](../../images/module_01/lab_02_idct/LatencyKrnlIdctDataflow.PNG)
-
-
-  * Note that the 3 sub-functions read, execute and write have roughly the same latency and that their sum total is equivalent to the total Interval reported in the **Summary** table.
-  * This indicates that the three sub-functions are executing sequentially, hinting to an optimization opportunity.
-
-
-#### Application Timeline report
-
-In addition to the profile_summary_hw_emu.csv file, the emulation run also generates an timeline_trace_hw_emu.csv file in yhe `build` folder. Before viewing it in Vitis GUI, it must be converted into an appropriate format.
-
-Open the generated profile summary report generated
-```
-vitis_analyzer timeline_trace_hw_emu.csv 
-```
-
-![](../../images/module_01/lab_02_idct/SWTimeline.PNG)
-
-The **Application Timeline** collects and displays host and device events on a common timeline to help you understand and visualize the overall health and performance of your systems. These events include OpenCL API calls from the host code: when they happen and how long each of them takes.
-
-
-### Summary  
-
-In this lab, you learned:
-* Important OpenCL API calls to communicate between the host and the FPGA
-* The differences between the software and hardware emulation flows and how to run them
-* How to read the various reports generated by Vitis
-
-
-In the next lab you utilize these analysis capabilities to drive and measure code optimizations.
+   * **NUM_OF_BATCHES** = N * **MAX_SCHEDULED_BATCHES**
+   
+   *where N is an integer number* 
+   
+### Summary 
+In this lab you learned:
+* About the IDCT application source code structure
+* OpenCL C/C++ APIs used to communicate between Host and FPGA
+* How to run IDCT application in different Emulation Modes
+* Differences between software and emulation flows
 
 ---------------------------------------
 
 <p align="center"><b>
-Start the next lab: <a href="lab_03_idct_optimization.md">Optimizing F1 applications</a>
+Start the next lab: <a href="lab_03_vitis_analyzer.md">Application Performance Analysis</a>
 </b></p>  
